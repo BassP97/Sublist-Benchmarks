@@ -1,8 +1,39 @@
 #include <algorithm>
+#include <cstring>
 #include <cuda_runtime.h>
 #include <iostream>
 #include <random>
 #include <vector>
+
+__device__ __forceinline__ int interpolation_search(const int *superList,
+                                                    const int superList_size,
+                                                    const int target) {
+  int left = 0;
+  int right = superList_size - 1;
+
+  while (left <= right && target >= superList[left] &&
+         target <= superList[right]) {
+    if (left == right) {
+      if (superList[left] == target)
+        return left;
+      return -1;
+    }
+
+    int pos =
+        left + ((double)(right - left) / (superList[right] - superList[left]) *
+                (target - superList[left]));
+
+    if (superList[pos] == target) {
+      return pos;
+    }
+    if (superList[pos] < target) {
+      left = pos + 1;
+    } else {
+      right = pos - 1;
+    }
+  }
+  return -1;
+}
 
 __device__ __forceinline__ int binary_search(const int *superList,
                                              const int superList_size,
@@ -29,18 +60,33 @@ __global__ void find_indices(const int *__restrict__ superList,
                              const int superList_size,
                              const int *__restrict__ subList,
                              const int subList_size, int *__restrict__ output,
-                             const int *__restrict__ original_indices) {
+                             const int *__restrict__ original_indices,
+                             bool use_interpolation) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (idx < subList_size) {
-    output[original_indices[idx]] =
-        binary_search(superList, superList_size, subList[idx]);
+    if (use_interpolation) {
+      output[original_indices[idx]] =
+          interpolation_search(superList, superList_size, subList[idx]);
+    } else {
+      output[original_indices[idx]] =
+          binary_search(superList, superList_size, subList[idx]);
+    }
   }
 }
 
-int main() {
-  int superList_size = 500000000;
-  int subList_size = 100000;
+int main(int argc, char *argv[]) {
+  if (argc != 4) {
+    std::cerr << "Usage: " << argv[0]
+              << " <search_type> <superList_size> <subList_size> " << std::endl;
+    std::cerr << "search_type: 0 for binary search, 1 for interpolation search"
+              << std::endl;
+    return 1;
+  }
+
+  bool use_interpolation = std::stoi(argv[1]);
+  int superList_size = std::stoi(argv[2]);
+  int subList_size = std::stoi(argv[3]);
 
   std::vector<int> superList(superList_size);
   std::iota(superList.begin(), superList.end(), 1);
@@ -49,7 +95,6 @@ int main() {
   for (int i = 0; i < subList_size; ++i) {
     subList[i] = rand() % superList_size + 1;
   }
-  std::cout << "Sublist size: " << subList.size() << std::endl;
 
   std::vector<int> indices(subList_size);
   std::iota(indices.begin(), indices.end(), 0);
@@ -60,6 +105,7 @@ int main() {
   for (int i = 0; i < subList_size; ++i) {
     sorted_subList[i] = subList[indices[i]];
   }
+  // std::cout << "Done with setup. Running the kernel" << std::endl;
 
   int *d_superList, *d_subList, *d_output, *d_indices;
   int *h_output;
@@ -87,7 +133,8 @@ int main() {
   cudaEventRecord(start);
 
   find_indices<<<numBlocks, blockSize>>>(d_superList, superList_size, d_subList,
-                                         subList_size, d_output, d_indices);
+                                         subList_size, d_output, d_indices,
+                                         use_interpolation);
 
   cudaEventRecord(stop);
   cudaEventSynchronize(stop);
